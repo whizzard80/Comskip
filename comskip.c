@@ -575,6 +575,11 @@ int					validate_ar = true;
 
 int					punish = 0;
 int					reward = 0;
+int					sports_mode = 0;				// 0=off, 1=basketball, 2=football, 3=baseball, 4=generic sports
+double				sports_min_break = 90.0;		// Minimum sports break length in seconds
+double				sports_max_break = 1200.0;		// Maximum sports break length in seconds (halftime)
+double				sports_halftime_min = 600.0;	// Minimum halftime length
+double				sports_halftime_max = 1500.0;	// Maximum halftime length
 int					min_volume=0;
 int					min_uniform = 0;
 int					volume_slip = 40;
@@ -5527,6 +5532,139 @@ void WeighBlocks(void)
 //		OutputStrict(cblock[i].length, (double) cblock[i].strict, 0.0);
     }
 
+    // ============================================================
+    // SPORTS MODE HEURISTICS
+    // ============================================================
+    // In sports broadcasts, commercial breaks are identified by:
+    // 1. Black frame + silence at the boundary (present in nearly all breaks)
+    // 2. Logo disappears during commercials
+    // 3. Breaks are 90-300 seconds (cluster of 15/30/60s ads)
+    // 4. Halftime is 600-1500 seconds
+    // 5. Non-logo segments between logo segments are likely commercial breaks
+    //
+    // Strategy: Look at blocks bounded by black+silence cutpoints.
+    // If a block has NO logo and is within sports break duration, boost its score.
+    // If a block has logo and is within game segment duration, lower its score.
+
+    if (sports_mode > 0)
+    {
+        Debug(1, "\n--- Sports Mode Heuristics ---\n");
+
+        // Pass 1: Boost blocks without logo that are bounded by black+silence
+        for (i = 0; i < block_count; i++)
+        {
+            int has_black_boundary = 0;
+            int has_silence_boundary = 0;
+
+            // Check if block boundaries have black frames or silence
+            if (cblock[i].cause & (C_b | C_u))
+                has_black_boundary = 1;
+            if (cblock[i].cause & C_v)
+                has_silence_boundary = 1;
+
+            // Check next block boundary too
+            if (i + 1 < block_count) {
+                if (cblock[i+1].cause & (C_b | C_u))
+                    has_black_boundary = 1;
+                if (cblock[i+1].cause & C_v)
+                    has_silence_boundary = 1;
+            }
+
+            // Sports: Block without logo, bounded by black+silence = likely commercial
+            if ((commDetectMethod & LOGO) && cblock[i].logo < logo_percentage_threshold)
+            {
+                if (has_black_boundary || has_silence_boundary)
+                {
+                    // Block has no logo and has black/silence boundary
+                    if (cblock[i].length >= min_commercial_size && cblock[i].length <= sports_max_break)
+                    {
+                        double sports_boost = 2.0;
+
+                        // Stronger boost if both black AND silence at boundary
+                        if (has_black_boundary && has_silence_boundary)
+                            sports_boost = 3.0;
+
+                        // Boost blocks in typical sports break duration range
+                        if (cblock[i].length >= sports_min_break && cblock[i].length <= 300.0)
+                            sports_boost *= 1.5;
+
+                        // Halftime detection
+                        if (cblock[i].length >= sports_halftime_min && cblock[i].length <= sports_halftime_max)
+                        {
+                            sports_boost = 10.0;
+                            Debug(1, "SPORTS: Block %i looks like HALFTIME (%.1fs, no logo, black+silence boundary)\n",
+                                  i, cblock[i].length);
+                        }
+
+                        Debug(2, "SPORTS: Boosting block %i (%.1fs, no logo, black/silence boundary) score: %.2f -> %.2f\n",
+                              i, cblock[i].length, cblock[i].score, cblock[i].score * sports_boost);
+                        cblock[i].score *= sports_boost;
+                        if (cblock[i].score > max_score) cblock[i].score = max_score;
+                    }
+                }
+            }
+
+            // Sports: Block WITH logo = likely game content, protect it
+            if ((commDetectMethod & LOGO) && cblock[i].logo > logo_percentage_threshold)
+            {
+                if (cblock[i].length >= min_show_segment_length)
+                {
+                    // Long block with logo = definitely game content
+                    Debug(2, "SPORTS: Protecting block %i (%.1fs, has logo) score: %.2f -> %.2f\n",
+                          i, cblock[i].length, cblock[i].score, cblock[i].score * 0.3);
+                    cblock[i].score *= 0.3;
+                }
+            }
+        }
+
+        // Pass 2: Merge adjacent non-logo blocks into commercial breaks
+        // In sports, multiple short commercial segments between black frames form one break
+        for (i = 0; i < block_count - 1; i++)
+        {
+            if (cblock[i].score > global_threshold && cblock[i+1].score > 0.8)
+            {
+                // If both blocks are non-logo and adjacent
+                if (cblock[i].logo < logo_percentage_threshold &&
+                    cblock[i+1].logo < logo_percentage_threshold)
+                {
+                    double combined = cblock[i].length + cblock[i+1].length;
+                    if (combined >= sports_min_break && combined <= sports_max_break)
+                    {
+                        // Boost the weaker block to match
+                        if (cblock[i+1].score < global_threshold)
+                        {
+                            Debug(2, "SPORTS: Merging block %i into commercial break (combined %.1fs)\n",
+                                  i+1, combined);
+                            cblock[i+1].score *= 2.0;
+                            if (cblock[i+1].score > max_score) cblock[i+1].score = max_score;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pass 3: Short non-logo blocks between game segments are likely commercials
+        for (i = 1; i < block_count - 1; i++)
+        {
+            // Block between two logo blocks (game segments)
+            if (cblock[i-1].logo > logo_percentage_threshold &&
+                cblock[i].logo < logo_percentage_threshold &&
+                (i + 1 >= block_count || cblock[i+1].logo > logo_percentage_threshold))
+            {
+                // Non-logo block sandwiched between logo blocks = commercial break
+                if (cblock[i].length >= min_commercial_size && cblock[i].length <= sports_max_break)
+                {
+                    Debug(1, "SPORTS: Block %i is non-logo between game segments (%.1fs) - marking as commercial\n",
+                          i, cblock[i].length);
+                    cblock[i].score *= 5.0;
+                    if (cblock[i].score > max_score) cblock[i].score = max_score;
+                }
+            }
+        }
+
+        Debug(1, "--- End Sports Mode Heuristics ---\n\n");
+    }
+
 
     if (!(disable_heuristics & (1 << (2 - 1))))
     {
@@ -8639,7 +8777,19 @@ void LoadIniFile()
         if ((tmp = FindNumber(data, "div5_tolerance=", (double) div5_tolerance)) > -1) div5_tolerance = tmp;
         if ((tmp = FindNumber(data, "incommercial_frames=", (double) incommercial_frames)) > -1) incommercial_frames = (int) tmp;
 
+        AddIniString("[Sports Detection]\n");
+        AddIniString(";sports_mode: 0=off, 1=basketball, 2=football, 3=baseball, 4=generic sports\n");
+        if ((tmp = FindNumber(data, "sports_mode=", (double) sports_mode)) > -1) sports_mode = (int) tmp;
+        if ((tmp = FindNumber(data, "sports_min_break=", (double) sports_min_break)) > -1) sports_min_break = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_max_break=", (double) sports_max_break)) > -1) sports_max_break = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_halftime_min=", (double) sports_halftime_min)) > -1) sports_halftime_min = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_halftime_max=", (double) sports_halftime_max)) > -1) sports_halftime_max = (double) tmp;
 
+        if (sports_mode > 0) {
+            Debug(1, "\nSports mode enabled: %d\n", sports_mode);
+            Debug(1, "  Sports break range: %.0f - %.0f seconds\n", sports_min_break, sports_max_break);
+            Debug(1, "  Halftime range: %.0f - %.0f seconds\n", sports_halftime_min, sports_halftime_max);
+        }
 
         AddIniString("[Output Control]\n");
         if ((tmp = FindNumber(data, "output_default=", (double) output_default)) > -1) output_default = (bool) tmp;
