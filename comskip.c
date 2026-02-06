@@ -5578,28 +5578,35 @@ void WeighBlocks(void)
                     // Block has no logo and has black/silence boundary
                     if (cblock[i].length >= min_commercial_size && cblock[i].length <= sports_max_break)
                     {
-                        double sports_boost = 2.0;
+                        double sports_score = 5.0;  // Direct score assignment, not multiplier
 
-                        // Stronger boost if both black AND silence at boundary
+                        // Stronger score if both black AND silence at boundary
                         if (has_black_boundary && has_silence_boundary)
-                            sports_boost = 3.0;
+                            sports_score = 8.0;
 
-                        // Boost blocks in typical sports break duration range
+                        // Boost blocks in typical sports break duration range (2-5 min)
                         if (cblock[i].length >= sports_min_break && cblock[i].length <= 300.0)
-                            sports_boost *= 1.5;
+                            sports_score = 15.0;
+
+                        // Shorter non-logo blocks (individual ads 15-60s) also commercial
+                        if (cblock[i].length >= 10.0 && cblock[i].length < sports_min_break)
+                            sports_score = 10.0;
 
                         // Halftime detection
                         if (cblock[i].length >= sports_halftime_min && cblock[i].length <= sports_halftime_max)
                         {
-                            sports_boost = 10.0;
+                            sports_score = 50.0;
                             Debug(1, "SPORTS: Block %i looks like HALFTIME (%.1fs, no logo, black+silence boundary)\n",
                                   i, cblock[i].length);
                         }
 
-                        Debug(2, "SPORTS: Boosting block %i (%.1fs, no logo, black/silence boundary) score: %.2f -> %.2f\n",
-                              i, cblock[i].length, cblock[i].score, cblock[i].score * sports_boost);
-                        cblock[i].score *= sports_boost;
-                        if (cblock[i].score > max_score) cblock[i].score = max_score;
+                        // Use MAX of existing score and sports score (don't reduce already-high scores)
+                        if (sports_score > cblock[i].score)
+                        {
+                            Debug(2, "SPORTS: Setting block %i score (%.1fs, no logo, boundary) from %.2f to %.2f\n",
+                                  i, cblock[i].length, cblock[i].score, sports_score);
+                            cblock[i].score = sports_score;
+                        }
                     }
                 }
             }
@@ -5643,21 +5650,38 @@ void WeighBlocks(void)
             }
         }
 
-        // Pass 3: Short non-logo blocks between game segments are likely commercials
+        // Pass 3: Non-logo blocks between game segments are likely commercials
+        // Also handle clusters: consecutive non-logo blocks form one break
         for (i = 1; i < block_count - 1; i++)
         {
-            // Block between two logo blocks (game segments)
-            if (cblock[i-1].logo > logo_percentage_threshold &&
-                cblock[i].logo < logo_percentage_threshold &&
-                (i + 1 >= block_count || cblock[i+1].logo > logo_percentage_threshold))
+            int prev_has_logo = 0;
+            int next_has_logo = 0;
+
+            // Look backward for nearest logo block
+            for (j = i - 1; j >= 0; j--) {
+                if (cblock[j].logo > logo_percentage_threshold) { prev_has_logo = 1; break; }
+                if (cblock[j].logo > logo_percentage_threshold) break;
+            }
+            // Look forward for nearest logo block
+            for (j = i + 1; j < block_count; j++) {
+                if (cblock[j].logo > logo_percentage_threshold) { next_has_logo = 1; break; }
+            }
+
+            if (prev_has_logo && next_has_logo &&
+                cblock[i].logo < logo_percentage_threshold)
             {
-                // Non-logo block sandwiched between logo blocks = commercial break
+                // Non-logo block sandwiched between game segments = commercial break
                 if (cblock[i].length >= min_commercial_size && cblock[i].length <= sports_max_break)
                 {
-                    Debug(1, "SPORTS: Block %i is non-logo between game segments (%.1fs) - marking as commercial\n",
-                          i, cblock[i].length);
-                    cblock[i].score *= 5.0;
-                    if (cblock[i].score > max_score) cblock[i].score = max_score;
+                    double sandwich_score = 12.0;
+                    if (cblock[i].length >= sports_min_break)
+                        sandwich_score = 20.0;
+
+                    if (sandwich_score > cblock[i].score) {
+                        Debug(1, "SPORTS: Block %i is non-logo between game segments (%.1fs) - setting score to %.2f\n",
+                              i, cblock[i].length, sandwich_score);
+                        cblock[i].score = sandwich_score;
+                    }
                 }
             }
         }
