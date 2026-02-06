@@ -580,6 +580,13 @@ double				sports_min_break = 90.0;		// Minimum sports break length in seconds
 double				sports_max_break = 1200.0;		// Maximum sports break length in seconds (halftime)
 double				sports_halftime_min = 600.0;	// Minimum halftime length
 double				sports_halftime_max = 1500.0;	// Maximum halftime length
+double				sports_timeout_min = 60.0;		// Minimum timeout break length
+double				sports_timeout_max = 300.0;		// Maximum timeout break length
+double				sports_audio_weight = 1.0;		// Weight for audio analysis in sports scoring
+double				sports_schange_weight = 1.0;	// Weight for scene change analysis in sports scoring
+double				sports_break_tolerance = 0.20;	// Tolerance for unexpected break lengths (20% over/under)
+int					sports_use_audio = 1;			// Enable audio variance analysis for sports
+int					sports_use_schange = 1;			// Enable scene change density analysis for sports
 int					min_volume=0;
 int					min_uniform = 0;
 int					volume_slip = 40;
@@ -5555,9 +5562,61 @@ void WeighBlocks(void)
 
     if (sports_mode > 0)
     {
-        Debug(1, "\n--- Sports Mode Heuristics ---\n");
+        Debug(1, "\n--- Sports Mode Heuristics (mode=%d) ---\n", sports_mode);
 
-        // Pass 1: Boost blocks without logo that are bounded by black+silence
+        // ================================================================
+        // Pass 0: Compute game audio/visual fingerprint from logo blocks
+        // ================================================================
+        // Game segments (blocks WITH logo) establish a reference for what
+        // "live gameplay" looks and sounds like. We then compare non-logo
+        // blocks against this fingerprint to identify commercials.
+        double game_avg_volume = 0;
+        double game_vol_sum2 = 0;
+        long game_frame_total = 0;
+        double game_avg_schange = 0;
+        double game_schange_total = 0;
+        int game_block_count = 0;
+
+        if (framearray) {
+            for (i = 0; i < block_count; i++) {
+                if (cblock[i].logo > logo_percentage_threshold && cblock[i].length > 30.0) {
+                    // This is a game segment - accumulate its audio statistics
+                    long k;
+                    for (k = cblock[i].f_start + 1; k < cblock[i].f_end; k++) {
+                        double v = (double)frame[k].volume;
+                        game_avg_volume += v;
+                        game_vol_sum2 += v * v;
+                        game_frame_total++;
+                    }
+                    game_schange_total += cblock[i].schange_rate;
+                    game_block_count++;
+                }
+            }
+        }
+
+        double game_vol_mean = 0, game_vol_stdev = 0;
+        if (game_frame_total > 1) {
+            game_vol_mean = game_avg_volume / game_frame_total;
+            game_vol_stdev = sqrt((game_vol_sum2 - game_avg_volume * game_avg_volume / game_frame_total) / (game_frame_total - 1));
+        }
+        double game_schange_mean = (game_block_count > 0) ? game_schange_total / game_block_count : avg_schange;
+
+        Debug(1, "SPORTS: Game fingerprint from %d logo blocks (%ld frames):\n", game_block_count, game_frame_total);
+        Debug(1, "  Audio: mean=%.0f, stdev=%.0f\n", game_vol_mean, game_vol_stdev);
+        Debug(1, "  Scene change rate: mean=%.4f (avg overall=%.4f)\n", game_schange_mean, avg_schange);
+
+        // ================================================================
+        // Pass 1: Boost non-logo blocks bounded by black+silence
+        // ================================================================
+        // Use sport-specific timeout/halftime ranges with tolerance
+        double tol = sports_break_tolerance;  // e.g. 0.20 = 20% tolerance
+        double effective_min_break = sports_min_break * (1.0 - tol);
+        double effective_max_break = sports_max_break * (1.0 + tol);
+        double effective_timeout_min = sports_timeout_min * (1.0 - tol);
+        double effective_timeout_max = sports_timeout_max * (1.0 + tol);
+        double effective_halftime_min = sports_halftime_min * (1.0 - tol);
+        double effective_halftime_max = sports_halftime_max * (1.0 + tol);
+
         for (i = 0; i < block_count; i++)
         {
             int has_black_boundary = 0;
@@ -5583,24 +5642,31 @@ void WeighBlocks(void)
                 if (has_black_boundary || has_silence_boundary)
                 {
                     // Block has no logo and has black/silence boundary
-                    if (cblock[i].length >= min_commercial_size && cblock[i].length <= sports_max_break)
+                    if (cblock[i].length >= min_commercial_size && cblock[i].length <= effective_halftime_max)
                     {
-                        double sports_score = 5.0;  // Direct score assignment, not multiplier
+                        double sports_score = 5.0;  // Base score for any non-logo bounded block
 
                         // Stronger score if both black AND silence at boundary
                         if (has_black_boundary && has_silence_boundary)
                             sports_score = 8.0;
 
-                        // Boost blocks in typical sports break duration range (2-5 min)
-                        if (cblock[i].length >= sports_min_break && cblock[i].length <= 300.0)
+                        // Timeout-range blocks (sport-specific duration)
+                        if (cblock[i].length >= effective_timeout_min && cblock[i].length <= effective_timeout_max)
+                        {
+                            sports_score = 15.0;
+                            Debug(2, "SPORTS: Block %i matches timeout range (%.1fs)\n", i, cblock[i].length);
+                        }
+
+                        // Typical commercial break range (cluster of ads)
+                        if (cblock[i].length >= effective_min_break && cblock[i].length <= effective_max_break)
                             sports_score = 15.0;
 
-                        // Shorter non-logo blocks (individual ads 15-60s) also commercial
-                        if (cblock[i].length >= 10.0 && cblock[i].length < sports_min_break)
+                        // Shorter non-logo blocks (individual ads 10-60s) also commercial
+                        if (cblock[i].length >= 10.0 && cblock[i].length < effective_min_break)
                             sports_score = 10.0;
 
-                        // Halftime detection
-                        if (cblock[i].length >= sports_halftime_min && cblock[i].length <= sports_halftime_max)
+                        // Halftime detection (with tolerance for comments 7/8: breaks can be shorter/longer)
+                        if (cblock[i].length >= effective_halftime_min && cblock[i].length <= effective_halftime_max)
                         {
                             sports_score = 50.0;
                             Debug(1, "SPORTS: Block %i looks like HALFTIME (%.1fs, no logo, black+silence boundary)\n",
@@ -5631,7 +5697,139 @@ void WeighBlocks(void)
             }
         }
 
-        // Pass 2: Merge adjacent non-logo blocks into commercial breaks
+        // ================================================================
+        // Pass 2: Audio variance analysis
+        // ================================================================
+        // Game audio (crowd noise, announcer) is consistently loud and variable.
+        // Commercial audio is different: more compressed, different volume profile.
+        // Compare each block's audio to the game fingerprint.
+        if (sports_use_audio && framearray && game_frame_total > 0)
+        {
+            Debug(1, "\nSPORTS: Audio analysis pass (game vol mean=%.0f, stdev=%.0f)\n", game_vol_mean, game_vol_stdev);
+
+            for (i = 0; i < block_count; i++)
+            {
+                // Compute this block's audio statistics
+                double block_vol_sum = 0, block_vol_sum2 = 0;
+                long block_n = 0;
+                long k;
+
+                for (k = cblock[i].f_start + 1; k < cblock[i].f_end; k++) {
+                    double v = (double)frame[k].volume;
+                    block_vol_sum += v;
+                    block_vol_sum2 += v * v;
+                    block_n++;
+                }
+
+                if (block_n < 2) continue;
+
+                double block_vol_mean = block_vol_sum / block_n;
+                double block_vol_stdev = sqrt((block_vol_sum2 - block_vol_sum * block_vol_sum / block_n) / (block_n - 1));
+
+                // Calculate how different this block's audio is from game audio
+                // Large difference = more likely commercial
+                double vol_deviation = (game_vol_mean > 0) ? fabs(block_vol_mean - game_vol_mean) / game_vol_mean : 0;
+                double stdev_ratio = (game_vol_stdev > 0) ? block_vol_stdev / game_vol_stdev : 1.0;
+
+                Debug(3, "SPORTS AUDIO: Block %i vol_mean=%.0f (game=%.0f, dev=%.1f%%), stdev=%.0f (ratio=%.2f)\n",
+                      i, block_vol_mean, game_vol_mean, vol_deviation * 100, block_vol_stdev, stdev_ratio);
+
+                // If block has no logo AND audio is very different from game audio
+                if (cblock[i].logo < logo_percentage_threshold)
+                {
+                    double audio_boost = 0;
+
+                    // Volume significantly different from game average (>30% deviation)
+                    if (vol_deviation > 0.30)
+                        audio_boost += 2.0 * sports_audio_weight;
+
+                    // Volume very different (>50% deviation) - stronger signal
+                    if (vol_deviation > 0.50)
+                        audio_boost += 3.0 * sports_audio_weight;
+
+                    // Audio variability pattern is different (commercials tend to have
+                    // more compressed/normalized audio vs game's natural dynamics)
+                    if (stdev_ratio < 0.5 || stdev_ratio > 2.0)
+                        audio_boost += 1.5 * sports_audio_weight;
+
+                    if (audio_boost > 0) {
+                        Debug(2, "SPORTS AUDIO: Block %i audio differs from game (boost +%.1f)\n",
+                              i, audio_boost);
+                        cblock[i].score += audio_boost;
+                    }
+                }
+
+                // If block HAS logo AND audio matches game audio, reinforce it as game content
+                if (cblock[i].logo > logo_percentage_threshold)
+                {
+                    if (vol_deviation < 0.20 && stdev_ratio > 0.5 && stdev_ratio < 2.0)
+                    {
+                        // Audio matches game fingerprint - protect this block
+                        Debug(3, "SPORTS AUDIO: Block %i audio matches game (protecting)\n", i);
+                        cblock[i].score *= 0.8;
+                    }
+                }
+            }
+        }
+
+        // ================================================================
+        // Pass 3: Scene change density analysis
+        // ================================================================
+        // Commercials have rapid scene changes (many cuts in short time).
+        // Game footage has a characteristic "broadcast cam" with less frequent,
+        // more predictable scene changes (replays, camera switches).
+        if (sports_use_schange && game_block_count > 0)
+        {
+            Debug(1, "\nSPORTS: Scene change analysis pass (game schange mean=%.4f)\n", game_schange_mean);
+
+            for (i = 0; i < block_count; i++)
+            {
+                if (cblock[i].length < 10.0 || cblock[i].schange_count < 2) continue;
+
+                double schange_ratio = (game_schange_mean > 0) ? cblock[i].schange_rate / game_schange_mean : 1.0;
+
+                Debug(3, "SPORTS SCHANGE: Block %i schange_rate=%.4f (game=%.4f, ratio=%.2f)\n",
+                      i, cblock[i].schange_rate, game_schange_mean, schange_ratio);
+
+                // Non-logo block with high scene change rate = more likely commercial
+                if (cblock[i].logo < logo_percentage_threshold)
+                {
+                    double schange_boost = 0;
+
+                    // Scene change rate significantly higher than game (>1.5x)
+                    if (schange_ratio > 1.5)
+                        schange_boost += 2.0 * sports_schange_weight;
+
+                    // Very high scene change rate (>2.5x game average) - strong commercial signal
+                    if (schange_ratio > 2.5)
+                        schange_boost += 3.0 * sports_schange_weight;
+
+                    // Very low scene change rate with no logo could be a static ad/promo
+                    if (schange_ratio < 0.3 && cblock[i].length < 120.0)
+                        schange_boost += 1.0 * sports_schange_weight;
+
+                    if (schange_boost > 0) {
+                        Debug(2, "SPORTS SCHANGE: Block %i has commercial-like scene changes (boost +%.1f)\n",
+                              i, schange_boost);
+                        cblock[i].score += schange_boost;
+                    }
+                }
+
+                // Logo block with game-like scene change rate = protect as game content
+                if (cblock[i].logo > logo_percentage_threshold)
+                {
+                    if (schange_ratio > 0.4 && schange_ratio < 2.0)
+                    {
+                        Debug(3, "SPORTS SCHANGE: Block %i has game-like scene changes (protecting)\n", i);
+                        cblock[i].score *= 0.9;
+                    }
+                }
+            }
+        }
+
+        // ================================================================
+        // Pass 4: Merge adjacent non-logo blocks into commercial breaks
+        // ================================================================
         // In sports, multiple short commercial segments between black frames form one break
         for (i = 0; i < block_count - 1; i++)
         {
@@ -5642,7 +5840,7 @@ void WeighBlocks(void)
                     cblock[i+1].logo < logo_percentage_threshold)
                 {
                     double combined = cblock[i].length + cblock[i+1].length;
-                    if (combined >= sports_min_break && combined <= sports_max_break)
+                    if (combined >= effective_min_break && combined <= effective_halftime_max)
                     {
                         // Boost the weaker block to match
                         if (cblock[i+1].score < global_threshold)
@@ -5657,7 +5855,9 @@ void WeighBlocks(void)
             }
         }
 
-        // Pass 3: Non-logo blocks between game segments are likely commercials
+        // ================================================================
+        // Pass 5: Non-logo blocks between game segments are likely commercials
+        // ================================================================
         // Also handle clusters: consecutive non-logo blocks form one break
         for (i = 1; i < block_count - 1; i++)
         {
@@ -5667,7 +5867,6 @@ void WeighBlocks(void)
             // Look backward for nearest logo block
             for (j = i - 1; j >= 0; j--) {
                 if (cblock[j].logo > logo_percentage_threshold) { prev_has_logo = 1; break; }
-                if (cblock[j].logo > logo_percentage_threshold) break;
             }
             // Look forward for nearest logo block
             for (j = i + 1; j < block_count; j++) {
@@ -5678,10 +5877,16 @@ void WeighBlocks(void)
                 cblock[i].logo < logo_percentage_threshold)
             {
                 // Non-logo block sandwiched between game segments = commercial break
-                if (cblock[i].length >= min_commercial_size && cblock[i].length <= sports_max_break)
+                if (cblock[i].length >= min_commercial_size && cblock[i].length <= effective_halftime_max)
                 {
                     double sandwich_score = 12.0;
-                    if (cblock[i].length >= sports_min_break)
+
+                    // Timeout-range blocks get higher score
+                    if (cblock[i].length >= effective_timeout_min && cblock[i].length <= effective_timeout_max)
+                        sandwich_score = 18.0;
+
+                    // Longer breaks (full commercial break or halftime)
+                    if (cblock[i].length >= effective_min_break)
                         sandwich_score = 20.0;
 
                     if (sandwich_score > cblock[i].score) {
@@ -5689,6 +5894,21 @@ void WeighBlocks(void)
                               i, cblock[i].length, sandwich_score);
                         cblock[i].score = sandwich_score;
                     }
+                }
+            }
+        }
+
+        // ================================================================
+        // Pass 6: Soccer-specific - protect very long game segments
+        // ================================================================
+        // Soccer has 45+ minute halves with almost no commercial interruptions.
+        // Any long logo block (>20 min) in soccer mode should be heavily protected.
+        if (sports_mode == 4) {
+            for (i = 0; i < block_count; i++) {
+                if (cblock[i].logo > logo_percentage_threshold && cblock[i].length > 1200.0) {
+                    Debug(1, "SPORTS SOCCER: Protecting long game segment block %i (%.1fs)\n",
+                          i, cblock[i].length);
+                    cblock[i].score *= 0.1;
                 }
             }
         }
@@ -8811,15 +9031,95 @@ void LoadIniFile()
         AddIniString("[Sports Detection]\n");
         AddIniString(";sports_mode: 0=off, 1=basketball, 2=football, 3=baseball, 4=soccer, 5=fight, 6=hockey, 7=generic sports\n");
         if ((tmp = FindNumber(data, "sports_mode=", (double) sports_mode)) > -1) sports_mode = (int) tmp;
+
+        // Apply sport-specific presets BEFORE reading optional overrides
+        // User can still override any of these in their ini file
+        if (sports_mode == 1) {
+            // Basketball: frequent timeouts (2-3 min), quarter breaks, halftime ~15 min
+            sports_min_break = 60.0;
+            sports_max_break = 600.0;
+            sports_timeout_min = 60.0;
+            sports_timeout_max = 240.0;
+            sports_halftime_min = 600.0;
+            sports_halftime_max = 1200.0;
+            Debug(1, "Sports preset: Basketball\n");
+        } else if (sports_mode == 2) {
+            // Football: frequent commercial breaks, halftime ~20 min, quarter breaks
+            sports_min_break = 60.0;
+            sports_max_break = 600.0;
+            sports_timeout_min = 60.0;
+            sports_timeout_max = 300.0;
+            sports_halftime_min = 900.0;
+            sports_halftime_max = 1500.0;
+            Debug(1, "Sports preset: Football\n");
+        } else if (sports_mode == 3) {
+            // Baseball: between innings ~2-3 min, 7th inning stretch, no formal halftime
+            sports_min_break = 90.0;
+            sports_max_break = 300.0;
+            sports_timeout_min = 90.0;
+            sports_timeout_max = 240.0;
+            sports_halftime_min = 300.0;
+            sports_halftime_max = 600.0;
+            Debug(1, "Sports preset: Baseball\n");
+        } else if (sports_mode == 4) {
+            // Soccer: very long playtime, halftime ~15 min, almost no other breaks
+            sports_min_break = 30.0;
+            sports_max_break = 300.0;
+            sports_timeout_min = 30.0;
+            sports_timeout_max = 120.0;
+            sports_halftime_min = 600.0;
+            sports_halftime_max = 1200.0;
+            Debug(1, "Sports preset: Soccer\n");
+        } else if (sports_mode == 5) {
+            // Fight (boxing/MMA): between rounds 1-2 min, short breaks
+            sports_min_break = 30.0;
+            sports_max_break = 300.0;
+            sports_timeout_min = 30.0;
+            sports_timeout_max = 120.0;
+            sports_halftime_min = 300.0;
+            sports_halftime_max = 900.0;
+            Debug(1, "Sports preset: Fight (boxing/MMA)\n");
+        } else if (sports_mode == 6) {
+            // Hockey: period intermissions ~18 min, occasional TV timeouts
+            sports_min_break = 60.0;
+            sports_max_break = 600.0;
+            sports_timeout_min = 60.0;
+            sports_timeout_max = 240.0;
+            sports_halftime_min = 900.0;
+            sports_halftime_max = 1500.0;
+            Debug(1, "Sports preset: Hockey\n");
+        } else if (sports_mode == 7) {
+            // Generic sports: reasonable defaults
+            sports_min_break = 60.0;
+            sports_max_break = 600.0;
+            sports_timeout_min = 60.0;
+            sports_timeout_max = 300.0;
+            sports_halftime_min = 600.0;
+            sports_halftime_max = 1500.0;
+            Debug(1, "Sports preset: Generic\n");
+        }
+
+        // Now read optional overrides from ini (user values take priority over presets)
         if ((tmp = FindNumber(data, "sports_min_break=", (double) sports_min_break)) > -1) sports_min_break = (double) tmp;
         if ((tmp = FindNumber(data, "sports_max_break=", (double) sports_max_break)) > -1) sports_max_break = (double) tmp;
         if ((tmp = FindNumber(data, "sports_halftime_min=", (double) sports_halftime_min)) > -1) sports_halftime_min = (double) tmp;
         if ((tmp = FindNumber(data, "sports_halftime_max=", (double) sports_halftime_max)) > -1) sports_halftime_max = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_timeout_min=", (double) sports_timeout_min)) > -1) sports_timeout_min = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_timeout_max=", (double) sports_timeout_max)) > -1) sports_timeout_max = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_audio_weight=", (double) sports_audio_weight)) > -1) sports_audio_weight = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_schange_weight=", (double) sports_schange_weight)) > -1) sports_schange_weight = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_break_tolerance=", (double) sports_break_tolerance)) > -1) sports_break_tolerance = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_use_audio=", (double) sports_use_audio)) > -1) sports_use_audio = (int) tmp;
+        if ((tmp = FindNumber(data, "sports_use_schange=", (double) sports_use_schange)) > -1) sports_use_schange = (int) tmp;
 
         if (sports_mode > 0) {
             Debug(1, "\nSports mode enabled: %d\n", sports_mode);
             Debug(1, "  Sports break range: %.0f - %.0f seconds\n", sports_min_break, sports_max_break);
+            Debug(1, "  Timeout range: %.0f - %.0f seconds\n", sports_timeout_min, sports_timeout_max);
             Debug(1, "  Halftime range: %.0f - %.0f seconds\n", sports_halftime_min, sports_halftime_max);
+            Debug(1, "  Break tolerance: %.0f%%\n", sports_break_tolerance * 100);
+            Debug(1, "  Audio analysis: %s (weight=%.1f)\n", sports_use_audio ? "ON" : "OFF", sports_audio_weight);
+            Debug(1, "  Scene change analysis: %s (weight=%.1f)\n", sports_use_schange ? "ON" : "OFF", sports_schange_weight);
         }
 
         AddIniString("[Output Control]\n");
