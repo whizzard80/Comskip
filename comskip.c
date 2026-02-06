@@ -575,7 +575,7 @@ int					validate_ar = true;
 
 int					punish = 0;
 int					reward = 0;
-int					sports_mode = 0;				// 0=off, 1=basketball, 2=football, 3=baseball, 4=generic sports
+int					sports_mode = 0;				// 0=off, 1=basketball, 2=football, 3=baseball, 4=soccer, 5=fight, 6=hockey, 7=generic sports
 double				sports_min_break = 90.0;		// Minimum sports break length in seconds
 double				sports_max_break = 1200.0;		// Maximum sports break length in seconds (halftime)
 double				sports_halftime_min = 600.0;	// Minimum halftime length
@@ -5540,11 +5540,18 @@ void WeighBlocks(void)
     // 2. Logo disappears during commercials
     // 3. Breaks are 90-300 seconds (cluster of 15/30/60s ads)
     // 4. Halftime is 600-1500 seconds
-    // 5. Non-logo segments between logo segments are likely commercial breaks
-    //
+    // 5. Non-logo segments between logo segments are likely commercial breaks when longer than 10-25 seconds.
+    // 6. Timeout is 2-3 minutes
+    // 7. From time to time, commercials can be shorter than expected due to the game coming back fast unexpectedly
+    // 8. Rarely, commercials can be longer than expected due to the game taking longer than expected to come back from a timeout
+    // 9. Soccer games have very long playtime without commercials.
+    // 10. Every game has a scoreboard somewhere on the screen.  Sometimes it is visible, sometimes it comes up only during live active play.  It can disappear for a few seconds during replays and other b-roll shots.
+    // 11. Every game has a clock somewhere on the screen.  Sometimes it is visible, sometimes it comes up only during live active play.  It can disappear for a few seconds during replays and other b-roll shots.
     // Strategy: Look at blocks bounded by black+silence cutpoints.
     // If a block has NO logo and is within sports break duration, boost its score.
     // If a block has logo and is within game segment duration, lower its score.
+    // The audio of the announcers and crowd noise is usually consistent throughout the game.  It is very different during commercials.
+    // The video of the game is usually consistent throughout the game.  Each sport has a standard "broadcast camera shot" used in every broadcast regardless of broadcaster/channel.  It is very different during commercials.
 
     if (sports_mode > 0)
     {
@@ -8802,7 +8809,7 @@ void LoadIniFile()
         if ((tmp = FindNumber(data, "incommercial_frames=", (double) incommercial_frames)) > -1) incommercial_frames = (int) tmp;
 
         AddIniString("[Sports Detection]\n");
-        AddIniString(";sports_mode: 0=off, 1=basketball, 2=football, 3=baseball, 4=generic sports\n");
+        AddIniString(";sports_mode: 0=off, 1=basketball, 2=football, 3=baseball, 4=soccer, 5=fight, 6=hockey, 7=generic sports\n");
         if ((tmp = FindNumber(data, "sports_mode=", (double) sports_mode)) > -1) sports_mode = (int) tmp;
         if ((tmp = FindNumber(data, "sports_min_break=", (double) sports_min_break)) > -1) sports_min_break = (double) tmp;
         if ((tmp = FindNumber(data, "sports_max_break=", (double) sports_max_break)) > -1) sports_max_break = (double) tmp;
