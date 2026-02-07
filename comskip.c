@@ -587,6 +587,8 @@ double				sports_schange_weight = 1.0;	// Weight for scene change analysis in sp
 double				sports_break_tolerance = 0.20;	// Tolerance for unexpected break lengths (20% over/under)
 int					sports_use_audio = 1;			// Enable audio variance analysis for sports
 int					sports_use_schange = 1;			// Enable scene change density analysis for sports
+double				sports_start_pad = 3.0;			// Seconds to expand commercial start boundary (catch pre-commercial bumper)
+double				sports_end_pad = 3.0;			// Seconds to expand commercial end boundary (catch post-commercial inbump)
 int					min_volume=0;
 int					min_uniform = 0;
 int					volume_slip = 40;
@@ -5542,9 +5544,20 @@ void WeighBlocks(void)
     // ============================================================
     // SPORTS MODE HEURISTICS
     // ============================================================
-    // In sports broadcasts, commercial breaks are identified by:
+    // Reference: ESPN3/ESPN+ School Productions Broadcast Manual (2018)
+    //
+    // BROADCAST STRUCTURE:
+    // - Shows are divided into segments (A's, B's, C's...) separated by commercial breaks
+    // - "Bump" = brief video clip BEFORE commercials (pre-commercial transition, ~3-5s)
+    // - "Inbump" = show segment starting with video/animation after commercials (~3-5s)
+    // - "Bug" = small network logo in corner; disappears during commercials
+    // - "Clock and Score" = scoreboard graphic; present during live play, absent during commercials
+    // - Standard camera setup: minimum 4 cameras (2 handheld, 2 hard cam / buildups)
+    // - Audio: stereo mix + international sound (crowd/effects without commentary)
+    //
+    // DETECTION SIGNALS:
     // 1. Black frame + silence at the boundary (present in nearly all breaks)
-    // 2. Logo disappears during commercials
+    // 2. Network logo (bug) disappears during commercials
     // 3. Breaks are 90-300 seconds (cluster of 15/30/60s ads)
     // 4. Halftime is 600-1500 seconds
     // 5. Non-logo segments between logo segments are likely commercial breaks when longer than 10-25 seconds.
@@ -5554,11 +5567,27 @@ void WeighBlocks(void)
     // 9. Soccer games have very long playtime without commercials.
     // 10. Every game has a scoreboard somewhere on the screen.  Sometimes it is visible, sometimes it comes up only during live active play.  It can disappear for a few seconds during replays and other b-roll shots.
     // 11. Every game has a clock somewhere on the screen.  Sometimes it is visible, sometimes it comes up only during live active play.  It can disappear for a few seconds during replays and other b-roll shots.
+    //
+    // AUDIO ANALYSIS:
+    // - Game audio: crowd mics + effects mics + commentary = consistently high/variable volume
+    // - Commercial audio: normalized/compressed, different voice patterns, music
+    // - The announcer's voice is consistent throughout the game and differs from commercial voices
+    //
+    // VISUAL ANALYSIS:
+    // - Each sport has a standard "broadcast camera shot" (wide shot from specific angle)
+    // - Scene change rate during gameplay follows predictable patterns (replays, camera switches)
+    // - Commercials have rapid scene cuts between different products/scenarios
+    // - B-Roll during game includes replays, crowd shots, coach reactions ("reacts")
+    //
+    // BOUNDARY HANDLING:
+    // - Bumper clips (3-5s) before commercials should be included in the cut
+    // - Inbump animations (3-5s) after commercials should be included in the cut
+    // - EDL boundaries are expanded by sports_start_pad and sports_end_pad to catch these
+    //
     // Strategy: Look at blocks bounded by black+silence cutpoints.
     // If a block has NO logo and is within sports break duration, boost its score.
     // If a block has logo and is within game segment duration, lower its score.
-    // The audio of the announcers and crowd noise is usually consistent throughout the game.  It is very different during commercials.
-    // The video of the game is usually consistent throughout the game.  Each sport has a standard "broadcast camera shot" used in every broadcast regardless of broadcaster/channel.  It is very different during commercials.
+    // Use audio variance and scene change density to reinforce classification.
 
     if (sports_mode > 0)
     {
@@ -7381,7 +7410,15 @@ void OutputCommercialBlock(int i, long prev, long start, long end, bool last)
         }
         else
         {
-            fprintf(edl_file, "%.2f\t%.2f\t%d\n", get_frame_pts(s_start), get_frame_pts(s_end), edl_skip_field);
+            // Sports mode: expand commercial boundaries to catch bumper/inbump clips
+            // Bumpers are brief pre-commercial transition clips; inbumps are post-commercial return animations
+            double edl_start_pts = get_frame_pts(s_start);
+            double edl_end_pts = get_frame_pts(s_end);
+            if (sports_mode > 0) {
+                edl_start_pts = (edl_start_pts > sports_start_pad) ? edl_start_pts - sports_start_pad : 0.0;
+                edl_end_pts += sports_end_pad;
+            }
+            fprintf(edl_file, "%.2f\t%.2f\t%d\n", edl_start_pts, edl_end_pts, edl_skip_field);
         }
     }
     CLOSEOUTFILE(edl_file);
@@ -9111,6 +9148,8 @@ void LoadIniFile()
         if ((tmp = FindNumber(data, "sports_break_tolerance=", (double) sports_break_tolerance)) > -1) sports_break_tolerance = (double) tmp;
         if ((tmp = FindNumber(data, "sports_use_audio=", (double) sports_use_audio)) > -1) sports_use_audio = (int) tmp;
         if ((tmp = FindNumber(data, "sports_use_schange=", (double) sports_use_schange)) > -1) sports_use_schange = (int) tmp;
+        if ((tmp = FindNumber(data, "sports_start_pad=", (double) sports_start_pad)) > -1) sports_start_pad = (double) tmp;
+        if ((tmp = FindNumber(data, "sports_end_pad=", (double) sports_end_pad)) > -1) sports_end_pad = (double) tmp;
 
         if (sports_mode > 0) {
             Debug(1, "\nSports mode enabled: %d\n", sports_mode);
@@ -9120,6 +9159,7 @@ void LoadIniFile()
             Debug(1, "  Break tolerance: %.0f%%\n", sports_break_tolerance * 100);
             Debug(1, "  Audio analysis: %s (weight=%.1f)\n", sports_use_audio ? "ON" : "OFF", sports_audio_weight);
             Debug(1, "  Scene change analysis: %s (weight=%.1f)\n", sports_use_schange ? "ON" : "OFF", sports_schange_weight);
+            Debug(1, "  EDL boundary padding: start=%.1fs, end=%.1fs (catch bumper/inbump clips)\n", sports_start_pad, sports_end_pad);
         }
 
         AddIniString("[Output Control]\n");
