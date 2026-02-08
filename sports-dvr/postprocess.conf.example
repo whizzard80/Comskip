@@ -1,0 +1,64 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  DVR Sports Post-Processing Configuration                                  ║
+# ║                                                                            ║
+# ║  Copy this file to 'postprocess.conf' and fill in your paths.              ║
+# ║  The post-processing scripts read this file at startup.                    ║
+# ║                                                                            ║
+# ║  Jellyfin DVR > Post-processing command:                                   ║
+# ║    /path/to/dvr-postprocess.sh "%path%"                                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+
+# Where your organized sports library lives (Jellyfin TV Shows library root)
+SPORTS_ROOT="/path/to/your/sports-library"
+
+# FFmpeg and FFprobe binary paths (use "ffmpeg"/"ffprobe" if they're on PATH)
+FFMPEG="ffmpeg"
+FFPROBE="ffprobe"
+
+# Comskip binary path (use "comskip" if it's on PATH)
+COMSKIP_BIN="comskip"
+
+# ── Hardware Acceleration ──────────────────────────────────────────────────────
+
+# Encoding mode for commercial removal re-encode:
+#   "software"  - CPU-based x264 encoding (works everywhere, slower)
+#   "qsv"       - Intel Quick Sync Video (fast, needs Intel GPU)
+#   "nvenc"     - NVIDIA NVENC (fast, needs NVIDIA GPU)
+#   "vaapi"     - VA-API (Linux, Intel/AMD GPU)
+ENCODE_MODE="software"
+
+# QSV device path (only used when ENCODE_MODE="qsv")
+QSV_DEV="/dev/dri/renderD128"
+
+# Video encoding quality settings
+VIDEO_BITRATE="4500k"
+VIDEO_MAXRATE="7000k"
+VIDEO_BUFSIZE="9000k"
+AUDIO_BITRATE="192k"
+
+# ── Jellyfin Integration ──────────────────────────────────────────────────────
+
+# Jellyfin API key (for triggering library scans after processing)
+# Generate one in Jellyfin > Dashboard > API Keys
+# Leave empty to skip automatic library scans
+JELLYFIN_API_KEY=""
+
+# Jellyfin server URL
+JELLYFIN_URL="http://localhost:8096"
+
+# ── Processing Options ─────────────────────────────────────────────────────────
+
+# Minimum recording duration in seconds to keep (shorter = truncated, delete it)
+# Set to 0 to keep all recordings regardless of length
+MIN_DURATION_SECONDS=3600
+
+# Remux .ts streams to .mp4 before processing (recommended for IPTV)
+REMUX_TO_MP4=true
+
+# Skip commercial detection entirely (for testing)
+SKIP_COMSKIP=false
+
+# Delete the original recording after successful processing
+DELETE_ORIGINAL=false

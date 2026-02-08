@@ -30,3 +30,9 @@ comskip.c.save-failed
 # Eclipse IDE
 .cproject
 .project
+
+# Sports DVR personal config (contains local paths)
+sports-dvr/postprocess.conf
+
+# Log files
+sports-dvr/*.log
