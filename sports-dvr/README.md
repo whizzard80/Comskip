@@ -22,6 +22,8 @@ dvr-postprocess.sh (router)
 - Moves to organized library: `League/Season/ABBREV.YYYY-MM-DD.Away.vs.Home.RES.mp4`
 - Generates NFO sidecar with episode metadata
 - Auto-deletes truncated recordings (configurable minimum duration)
+- Auto-detects source bitrate for quality-matched re-encoding
+- Cleans up old temp recordings from the DVR directory
 
 **For regular TV recordings:**
 - Removes commercials using Comskip with standard TV detection
@@ -81,8 +83,15 @@ SPORTS_ROOT="/path/to/your/sports-library"
 # Encoding mode: software, qsv, nvenc, or vaapi
 ENCODE_MODE="software"
 
+# Video bitrate: "auto" probes source and matches, or set explicit (e.g., "4500k")
+VIDEO_BITRATE="auto"
+
 # Optional: Jellyfin API key for auto library scans
 JELLYFIN_API_KEY="your-api-key-here"
+
+# Optional: DVR temp directory cleanup (delete old recordings after N hours)
+DVR_RECORDING_PATH="/path/to/jellyfin/dvr/temp"
+TEMP_CLEANUP_HOURS=4
 ```
 
 ### 3. Set Up Jellyfin
@@ -124,6 +133,8 @@ Patterns use glob-style matching (case-insensitive). First match wins.
 | `comskip-tv.ini` | Comskip config tuned for regular TV shows |
 | `comskip-fork.sh` | Wrapper to use the local Comskip fork build |
 | `postprocess.conf.example` | Configuration template — copy to `postprocess.conf` |
+| `COMSKIP_CODE_MAPPING.md` | Comskip source code architecture mapping for sports detection |
+| `BASELINE_RESULTS.md` | Baseline test results comparing fork vs system Comskip |
 
 ## Command-Line Options
 

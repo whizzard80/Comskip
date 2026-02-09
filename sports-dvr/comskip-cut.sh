@@ -27,9 +27,9 @@ FFPROBE="${FFPROBE:-ffprobe}"
 COMSKIP_BIN="${COMSKIP_BIN:-comskip}"
 ENCODE_MODE="${ENCODE_MODE:-software}"
 QSV_DEV="${QSV_DEV:-/dev/dri/renderD128}"
-VIDEO_BITRATE="${VIDEO_BITRATE:-4500k}"
-VIDEO_MAXRATE="${VIDEO_MAXRATE:-7000k}"
-VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-9000k}"
+VIDEO_BITRATE="${VIDEO_BITRATE:-auto}"
+VIDEO_MAXRATE="${VIDEO_MAXRATE:-}"
+VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-}"
 AUDIO_BITRATE="${AUDIO_BITRATE:-192k}"
 
 # ── Parse Arguments ────────────────────────────────────────────────────────────
@@ -136,6 +136,68 @@ print(f"  Commercials: {len(cuts)} breaks, {total_comm:.0f}s ({total_comm/60:.1f
 print(f"  Content:     {len(keep)} segments, {total_keep:.0f}s ({total_keep/60:.1f} min)")
 print(f"  Reduction:   {total_comm/duration*100:.1f}% removed")
 PYEOF
+
+# ── Auto-detect Source Bitrate ────────────────────────────────────────────────
+
+detect_source_bitrate() {
+    local input="$1"
+    local bitrate=""
+
+    # Try stream-level video bitrate (most accurate)
+    bitrate=$("$FFPROBE" -v error -select_streams v:0 \
+        -show_entries stream=bit_rate -of csv=p=0 "$input" 2>/dev/null | head -1)
+
+    if [[ -n "$bitrate" && "$bitrate" != "N/A" ]] && (( bitrate > 0 )) 2>/dev/null; then
+        echo "$bitrate"
+        return 0
+    fi
+
+    # Fallback: compute from total format bitrate minus audio
+    local fmt_bitrate audio_bitrate audio_est
+    fmt_bitrate=$("$FFPROBE" -v error \
+        -show_entries format=bit_rate -of csv=p=0 "$input" 2>/dev/null | head -1)
+    audio_bitrate=$("$FFPROBE" -v error -select_streams a:0 \
+        -show_entries stream=bit_rate -of csv=p=0 "$input" 2>/dev/null | head -1)
+
+    audio_est="${audio_bitrate:-192000}"
+    [[ "$audio_est" == "N/A" ]] && audio_est=192000
+
+    if [[ -n "$fmt_bitrate" && "$fmt_bitrate" != "N/A" ]] && (( fmt_bitrate > 0 )) 2>/dev/null; then
+        bitrate=$((fmt_bitrate - audio_est))
+        if (( bitrate > 0 )); then
+            echo "$bitrate"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+BITRATE_FALLBACK="4500k"
+
+if [[ "$VIDEO_BITRATE" == "auto" ]]; then
+    echo "Probing source bitrate..."
+    if SRC_BITRATE_BPS=$(detect_source_bitrate "$INPUT"); then
+        SRC_KBPS=$((SRC_BITRATE_BPS / 1000))
+        VIDEO_BITRATE="${SRC_KBPS}k"
+        VIDEO_MAXRATE="${VIDEO_MAXRATE:-$((SRC_KBPS * 150 / 100))k}"
+        VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-$((SRC_KBPS * 200 / 100))k}"
+        echo "  Source: ${SRC_KBPS} kbps"
+        echo "  Target: bitrate=${VIDEO_BITRATE} maxrate=${VIDEO_MAXRATE} bufsize=${VIDEO_BUFSIZE}"
+    else
+        VIDEO_BITRATE="$BITRATE_FALLBACK"
+        VIDEO_MAXRATE="${VIDEO_MAXRATE:-7000k}"
+        VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-9000k}"
+        echo "  Could not detect source bitrate, using fallback: ${VIDEO_BITRATE}"
+    fi
+else
+    # Explicit bitrate set -- fill in maxrate/bufsize if not specified
+    VIDEO_MAXRATE="${VIDEO_MAXRATE:-7000k}"
+    VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-9000k}"
+    echo "Using configured bitrate: ${VIDEO_BITRATE}"
+fi
+
+echo ""
 
 # ── Step 3: Re-encode Without Commercials ─────────────────────────────────────
 

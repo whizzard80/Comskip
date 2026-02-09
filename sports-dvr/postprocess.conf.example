@@ -33,9 +33,12 @@ ENCODE_MODE="software"
 QSV_DEV="/dev/dri/renderD128"
 
 # Video encoding quality settings
-VIDEO_BITRATE="4500k"
-VIDEO_MAXRATE="7000k"
-VIDEO_BUFSIZE="9000k"
+# Set VIDEO_BITRATE="auto" to probe the source and match its bitrate automatically.
+# When "auto", VIDEO_MAXRATE and VIDEO_BUFSIZE are calculated from the detected rate.
+# Set explicit values to override (e.g., VIDEO_BITRATE="4500k").
+VIDEO_BITRATE="auto"
+VIDEO_MAXRATE=""
+VIDEO_BUFSIZE=""
 AUDIO_BITRATE="192k"
 
 # ── Jellyfin Integration ──────────────────────────────────────────────────────
@@ -62,3 +65,12 @@ SKIP_COMSKIP=false
 
 # Delete the original recording after successful processing
 DELETE_ORIGINAL=false
+
+# ── Temp Cleanup ──────────────────────────────────────────────────────────────
+# Path where Jellyfin DVR saves raw recordings (must match Jellyfin DVR settings).
+# When set, old temp files are cleaned up after each post-processing run.
+# Leave empty to disable temp cleanup.
+DVR_RECORDING_PATH=""
+
+# Delete temp files older than this many hours (0 = disabled)
+TEMP_CLEANUP_HOURS=4

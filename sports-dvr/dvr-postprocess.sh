@@ -38,6 +38,8 @@ MIN_DURATION_SECONDS="${MIN_DURATION_SECONDS:-3600}"
 REMUX_TO_MP4="${REMUX_TO_MP4:-true}"
 SKIP_COMSKIP="${SKIP_COMSKIP:-false}"
 DELETE_ORIGINAL="${DELETE_ORIGINAL:-false}"
+DVR_RECORDING_PATH="${DVR_RECORDING_PATH:-}"
+TEMP_CLEANUP_HOURS="${TEMP_CLEANUP_HOURS:-4}"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 
@@ -219,4 +221,39 @@ else
 fi
 
 log "  Post-processing complete."
+
+# ── Temp Directory Cleanup ────────────────────────────────────────────────────
+# Clean up old recordings from the DVR temp directory to prevent disk fill-up.
+# Only runs if DVR_RECORDING_PATH is set in postprocess.conf.
+# Deletes media/sidecar files older than TEMP_CLEANUP_HOURS (default 4).
+
+if [[ -n "$DVR_RECORDING_PATH" && -d "$DVR_RECORDING_PATH" && "$TEMP_CLEANUP_HOURS" -gt 0 ]]; then
+    cleanup_mins=$((TEMP_CLEANUP_HOURS * 60))
+
+    # Count old media files
+    old_files=$(find "$DVR_RECORDING_PATH" -type f \
+        \( -name "*.ts" -o -name "*.mp4" -o -name "*.mkv" -o -name "*.avi" \
+           -o -name "*.nfo" -o -name "*.edl" -o -name "*.png" -o -name "*.jpg" \
+           -o -name "*.jpeg" -o -name "*.srt" -o -name "*.vtt" \) \
+        -mmin +"$cleanup_mins" 2>/dev/null)
+
+    old_count=$(echo "$old_files" | grep -c . 2>/dev/null || echo 0)
+
+    if [[ "$old_count" -gt 0 ]]; then
+        log "  Temp cleanup: removing $old_count files older than ${TEMP_CLEANUP_HOURS}h from $DVR_RECORDING_PATH"
+
+        # Delete old media/sidecar files
+        find "$DVR_RECORDING_PATH" -type f \
+            \( -name "*.ts" -o -name "*.mp4" -o -name "*.mkv" -o -name "*.avi" \
+               -o -name "*.nfo" -o -name "*.edl" -o -name "*.png" -o -name "*.jpg" \
+               -o -name "*.jpeg" -o -name "*.srt" -o -name "*.vtt" \) \
+            -mmin +"$cleanup_mins" -delete 2>/dev/null
+
+        # Remove empty subdirectories left behind
+        find "$DVR_RECORDING_PATH" -mindepth 1 -type d -empty -delete 2>/dev/null
+
+        log "  Temp cleanup: done."
+    fi
+fi
+
 log ""
